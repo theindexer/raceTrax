@@ -102,7 +102,6 @@
         }
         
         .stats {
-            display: grid;
             grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
             gap: 15px;
             margin-top: 15px;
@@ -153,6 +152,81 @@
             font-size: 14px;
             color: #666;
         }
+
+        .mile-table {
+            width: 100%;
+            border-collapse: collapse;
+            margin-top: 20px;
+            background: white;
+            border-radius: 8px;
+            overflow: hidden;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }
+
+        .mile-table thead {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+        }
+
+        .mile-table th {
+            padding: 15px;
+            text-align: left;
+            font-weight: 600;
+            font-size: 14px;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+
+        .mile-table td {
+            padding: 12px 15px;
+            border-bottom: 1px solid #f0f0f0;
+            font-size: 14px;
+            color: #333;
+        }
+
+        .mile-table tbody tr {
+            cursor: pointer;
+        }
+
+        .mile-table tbody tr:hover {
+            background: #f8f9ff;
+            transition: background 0.2s ease;
+        }
+
+        .mile-table tbody tr:last-child td {
+            border-bottom: none;
+        }
+
+        .mile-col {
+            font-weight: 600;
+            color: #667eea;
+        }
+
+        .eta-col {
+            color: #555;
+        }
+
+        .current-mile {
+            background: #fff3cd !important;
+            border-left: 4px solid #ffc107;
+            font-weight: 600;
+        }
+
+        .current-mile:hover {
+            background: #ffe69c !important;
+        }
+
+        .current-marker {
+            position: relative;
+        }
+
+        .current-marker::before {
+            content: '▶';
+            position: absolute;
+            left: -25px;
+            font-size: 14px;
+            color: #ffc107;
+        }
     </style>
 </head>
 <body>
@@ -162,7 +236,7 @@
         
         <div class="controls">
             <div class="control-group">
-                <div class="control-item">
+                <div class="control-item" id="gpxUploadControl">
                     <label for="gpxFile">Upload GPX File:</label>
                     <input type="file" id="gpxFile" accept=".gpx" />
                 </div>
@@ -172,7 +246,7 @@
                 </div>
                 <div class="control-item">
                     <label for="pace">Pace:</label>
-        	    <div class="pace-input-group">
+                    <div class="pace-input-group">
                         <input type="number" id="paceMin" min="1" max="60" step="1" value="10" />
                         <span id="paceUnit">min</span>
                         <input type="number" id="paceSec" min="0" max="59" step="1" value="0" />
@@ -204,13 +278,136 @@
           document.getElementById('paceSec').value = paceSecParam;
         }
         if (startParam) {
-	  document.getElementById("startTime").value = startParam;
+          document.getElementById("startTime").value = startParam;
         }
 
         let map;
         let routeLayer;
         let markersLayer;
+        let runnerLayer;
         let routeData = null;
+        let markersWithTimes = null;
+
+        // Polyline encoding/decoding functions
+        function encodePolyline(points) {
+            let result = '';
+            let prevLat = 0;
+            let prevLng = 0;
+
+            points.forEach(point => {
+                const lat = Math.round(point.lat * 1e5);
+                const lng = Math.round(point.lon * 1e5);
+
+                result += encodeNumber(lat - prevLat);
+                result += encodeNumber(lng - prevLng);
+
+                prevLat = lat;
+                prevLng = lng;
+            });
+
+            return result;
+        }
+
+        function encodeNumber(num) {
+            let encoded = '';
+            let value = num < 0 ? ~(num << 1) : (num << 1);
+
+            while (value >= 0x20) {
+                encoded += String.fromCharCode((0x20 | (value & 0x1f)) + 63);
+                value >>= 5;
+            }
+            encoded += String.fromCharCode(value + 63);
+            return encoded;
+        }
+
+        function decodePolyline(encoded) {
+            const points = [];
+            let index = 0;
+            let lat = 0;
+            let lng = 0;
+
+            while (index < encoded.length) {
+                let shift = 0;
+                let result = 0;
+                let byte;
+
+                do {
+                    byte = encoded.charCodeAt(index++) - 63;
+                    result |= (byte & 0x1f) << shift;
+                    shift += 5;
+                } while (byte >= 0x20);
+
+                const deltaLat = (result & 1) ? ~(result >> 1) : (result >> 1);
+                lat += deltaLat;
+
+                shift = 0;
+                result = 0;
+
+                do {
+                    byte = encoded.charCodeAt(index++) - 63;
+                    result |= (byte & 0x1f) << shift;
+                    shift += 5;
+                } while (byte >= 0x20);
+
+                const deltaLng = (result & 1) ? ~(result >> 1) : (result >> 1);
+                lng += deltaLng;
+
+                points.push({
+                    lat: lat / 1e5,
+                    lon: lng / 1e5
+                });
+            }
+
+            return points;
+        }
+
+        // Simplify route using Douglas-Peucker algorithm
+        function simplifyRoute(points, tolerance = 0.0001) {
+            if (points.length <= 2) return points;
+
+            // Find the point with maximum distance
+            let maxDist = 0;
+            let maxIndex = 0;
+
+            for (let i = 1; i < points.length - 1; i++) {
+                const dist = perpendicularDistance(
+                    points[i],
+                    points[0],
+                    points[points.length - 1]
+                );
+                if (dist > maxDist) {
+                    maxDist = dist;
+                    maxIndex = i;
+                }
+            }
+
+            // If max distance is greater than tolerance, recursively simplify
+            if (maxDist > tolerance) {
+                const left = simplifyRoute(points.slice(0, maxIndex + 1), tolerance);
+                const right = simplifyRoute(points.slice(maxIndex), tolerance);
+                return left.slice(0, -1).concat(right);
+            } else {
+                return [points[0], points[points.length - 1]];
+            }
+        }
+
+        function perpendicularDistance(point, lineStart, lineEnd) {
+            const dx = lineEnd.lon - lineStart.lon;
+            const dy = lineEnd.lat - lineStart.lat;
+
+            const mag = Math.sqrt(dx * dx + dy * dy);
+            if (mag > 0) {
+                const u = ((point.lon - lineStart.lon) * dx + (point.lat - lineStart.lat) * dy) / (mag * mag);
+                const closestPoint = {
+                    lat: lineStart.lat + u * dy,
+                    lon: lineStart.lon + u * dx
+                };
+                const dlat = point.lat - closestPoint.lat;
+                const dlon = point.lon - closestPoint.lon;
+                return Math.sqrt(dlat * dlat + dlon * dlon);
+            }
+            return 0;
+        }
         
         // Initialize map
         function initMap() {
@@ -223,6 +420,7 @@
             
             routeLayer = L.layerGroup().addTo(map);
             markersLayer = L.layerGroup().addTo(map);
+            runnerLayer = L.layerGroup().addTo(map);
         }
         
         // Calculate distance between two points (Haversine formula)
@@ -305,28 +503,83 @@
         // Calculate estimated time at each marker
         function calculateEstimatedTimes(markers, totalDistance, startTime, pace) {
             if (!startTime) return markers;
-            
-        const start = new Date(`1970-01-01T${startTime}:00`);
-        const avgSpeed = 1 / pace * 60
-            
+
+            // Create start time as today's date with specified time
+            const now = new Date();
+            const start = new Date();
+            const [hours, minutes] = startTime.split(':');
+            start.setHours(parseInt(hours), parseInt(minutes), 0, 0);
+
+            const avgSpeed = 1 / pace * 60;
+
             return markers.map(marker => {
                 const hoursToMarker = marker.distance / avgSpeed;
                 const eta = new Date(start.getTime() + hoursToMarker * 60 * 60 * 1000);
+
+                // Calculate time difference from now
+                const diffMs = eta - now;
+                const diffMinutes = Math.round(diffMs / (1000 * 60));
+
+                let relativeTime;
+                if (diffMinutes > 0) {
+                    if (diffMinutes < 60) {
+                        relativeTime = `in ${diffMinutes} min`;
+                    } else {
+                        const hours = Math.floor(diffMinutes / 60);
+                        const mins = diffMinutes % 60;
+                        relativeTime = `in ${hours}h ${mins}m`;
+                    }
+                } else {
+                    const absMins = Math.abs(diffMinutes);
+                    if (absMins < 60) {
+                        relativeTime = `${absMins} min ago`;
+                    } else {
+                        const hours = Math.floor(absMins / 60);
+                        const mins = absMins % 60;
+                        relativeTime = `${hours}h ${mins}m ago`;
+                    }
+                }
+
                 return {
                     ...marker,
-                    eta: eta.toLocaleTimeString('en-US', { 
-                        hour: 'numeric', 
+                    eta: eta.toLocaleTimeString('en-US', {
+                        hour: 'numeric',
                         minute: '2-digit',
-                        hour12: true 
-                    })
+                        hour12: true
+                    }),
+                    relativeTime
                 };
             });
         }
         
+        // Calculate current position based on time
+        function getCurrentPosition(startTime, pace, totalDistance) {
+            if (!startTime) return null;
+
+            const now = new Date();
+            const start = new Date();
+            const [hours, minutes] = startTime.split(':');
+            start.setHours(parseInt(hours), parseInt(minutes), 0, 0);
+
+            const elapsedMs = now - start;
+            const elapsedHours = elapsedMs / (1000 * 60 * 60);
+
+            // If race hasn't started yet or is finished, return null
+            if (elapsedHours < 0) return null;
+
+            const avgSpeed = 1 / pace * 60; // miles per hour
+            const currentDistance = elapsedHours * avgSpeed;
+
+            if (currentDistance > totalDistance) return null; // Race finished
+
+            return currentDistance;
+        }
+
         // Display route on map
-        function displayRoute(points, markers) {
+        function displayRoute(points, markers, currentDistance = null) {
             routeLayer.clearLayers();
             markersLayer.clearLayers();
+            runnerLayer.clearLayers();
             
             // Draw route line
             const latLngs = points.map(p => [p.lat, p.lon]);
@@ -378,7 +631,34 @@
             L.marker([lastPoint.lat, lastPoint.lon], { icon: endIcon })
                 .bindTooltip('<div class="marker-popup"><h3>Finish</h3></div>')
                 .addTo(markersLayer);
-            
+
+            // Add current position marker if race is in progress
+            if (currentDistance !== null && routeData) {
+                const { distances } = routeData;
+
+                // Find exact interpolated position on route based on current distance
+                for (let i = 1; i < distances.length; i++) {
+                    if (distances[i] >= currentDistance) {
+                        // Interpolate between two GPS points
+                        const ratio = (currentDistance - distances[i-1]) / (distances[i] - distances[i-1]);
+                        const lat = points[i-1].lat + ratio * (points[i].lat - points[i-1].lat);
+                        const lon = points[i-1].lon + ratio * (points[i].lon - points[i-1].lon);
+
+                        const currentIcon = L.divIcon({
+                            className: 'custom-marker',
+                            html: '<div style="background: #ffc107; color: white; width: 40px; height: 40px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-weight: bold; font-size: 20px; border: 3px solid white; box-shadow: 0 2px 8px rgba(0,0,0,0.4);">🏃</div>',
+                            iconSize: [40, 40]
+                        });
+
+                        L.marker([lat, lon], { icon: currentIcon })
+                            .bindTooltip(`<div class="marker-popup"><h3>Current Position</h3><p>${currentDistance.toFixed(2)} miles</p></div>`)
+                            .addTo(runnerLayer);
+
+                        break;
+                    }
+                }
+            }
+
             // Fit map to route
             map.fitBounds(polyline.getBounds(), { padding: [50, 50] });
         }
@@ -393,17 +673,8 @@
                     <div class="stat-label">Total Distance</div>
                     <div class="stat-value">${totalDistance.toFixed(2)} mi</div>
                 </div>
-                <div class="stat-item">
-                    <div class="stat-label">Mile Markers</div>
-                    <div class="stat-value">${markers.length}</div>
-                </div>
-                <div class="stat-item">
-                    <div class="stat-label">Track Points</div>
-                    <div class="stat-value">${routeData.points.length}</div>
-                </div>
             `;
             
-            infoPanel.style.display = 'block';
         }
         
         // Show error
@@ -415,22 +686,55 @@
                 errorDiv.style.display = 'none';
             }, 5000);
         }
-        
+        // Load route after map is initialized
+        function loadRoute() {
+            const routeParam = params.get("route");
+            if (routeParam) {
+                // Hide GPX upload when viewing a shared route
+                document.getElementById('gpxUploadControl').style.display = 'none';
+
+                try {
+                    console.log('Route param:', routeParam);
+                    console.log('Route param length:', routeParam.length);
+                    const points = decodePolyline(routeParam);
+                    console.log('Decoded points:', points.length);
+                    const { distances, totalDistance } = calculateCumulativeDistances(points);
+                    const markers = findMileMarkers(points, distances, totalDistance);
+
+                    routeData = { points, distances, totalDistance, markers };
+                    updateRoute();
+                } catch (error) {
+                    console.error('Error decoding route:', error);
+                    console.error('Error details:', error.message, error.stack);
+                    showError('Invalid route parameter: ' + error.message);
+                }
+            } else {
+                // Fallback to loading blue.gpx
+                fetch('./routes/blue.gpx')
+                 .then(response => {
+                   if (!response.ok) {
+                     throw new Error(`HTTP error! status: ${response.status}`);
+                   }
+                   return response.text();
+                 })
+                 .then(data => {
+                   handleGpx(data);
+                 })
+                 .catch(error => {
+                   console.error('Error fetching file:', error);
+                 });
+            }
+        }
+
         // Process GPX file
         function processGPXFile(file) {
             const reader = new FileReader();
             
             reader.onload = function(e) {
                 try {
-                    const points = parseGPX(e.target.result);
-                    const { distances, totalDistance } = calculateCumulativeDistances(points);
-                    const markers = findMileMarkers(points, distances, totalDistance);
-                    
-                    routeData = { points, distances, totalDistance, markers };
-                    updateRoute();
-                    displayStats(totalDistance, markers);
+                  handleGpx(e.target.result);
                 } catch (error) {
-                    showError('Error parsing GPX file: ' + error.message);
+                  showError('Error parsing GPX file: ' + error.message);
                 }
             };
             
@@ -440,33 +744,186 @@
             
             reader.readAsText(file);
         }
+
+        function handleGpx(gpx) {
+            const originalPoints = parseGPX(gpx);
+
+            // Simplify and encode
+            const simplified = simplifyRoute(originalPoints, 0.0001);
+            console.log('Original points:', originalPoints.length, 'Simplified:', simplified.length);
+            const encoded = encodePolyline(simplified);
+            console.log('Encoded polyline length:', encoded.length);
+            console.log('Encoded polyline:', encoded.substring(0, 100) + '...');
+
+            // Decode back to ensure we use exactly what recipients will see
+            const points = decodePolyline(encoded);
+            console.log('Decoded back to points:', points.length);
+
+            // Now use the decoded points as source of truth
+            const { distances, totalDistance } = calculateCumulativeDistances(points);
+            const markers = findMileMarkers(points, distances, totalDistance);
+
+            routeData = { points, distances, totalDistance, markers };
+
+            // Update URL with encoded route
+            const params = new URLSearchParams(window.location.search);
+            params.set("route", encoded);
+
+            // Preserve other params
+            const startTime = document.getElementById('startTime').value;
+            const paceMin = document.getElementById('paceMin').value;
+            const paceSec = document.getElementById('paceSec').value;
+            if (startTime) params.set("startTime", startTime);
+            if (paceMin) params.set("paceMin", paceMin);
+            if (paceSec) params.set("paceSec", paceSec);
+
+            const newUrl = `${window.location.pathname}?${params.toString()}`;
+            window.history.replaceState({}, '', newUrl);
+
+            updateRoute();
+        }
         
         // Update route with current start time
         function updateRoute() {
             if (!routeData) return;
-	    
+            
             
             const startTime = document.getElementById('startTime').value;
-	    const paceMin = document.getElementById('paceMin').value;
-	    const paceSec = document.getElementById('paceSec').value
-            const pace = paceMin + paceSec / 60;
+            const paceMin = document.getElementById('paceMin').value;
+            const paceSec = document.getElementById('paceSec').value
+            const pace = parseInt(paceMin) + parseInt(paceSec) / 60;
+            console.log(pace)
 
-	    const params = new URLSearchParams(window.location.search);
-	    params.set("startTime", startTime);
-	    params.set("paceMin", paceMin);
-	    params.set("paceSec", paceSec);
-	    const newUrl = `${window.location.pathname}?${params.toString()}`;
-	    window.history.replaceState({}, '', newUrl);
-            const markersWithTimes = calculateEstimatedTimes(
-                routeData.markers, 
-                routeData.totalDistance, 
+            const params = new URLSearchParams(window.location.search);
+            params.set("startTime", startTime);
+            params.set("paceMin", paceMin);
+            params.set("paceSec", paceSec);
+            const newUrl = `${window.location.pathname}?${params.toString()}`;
+            window.history.replaceState({}, '', newUrl);
+            markersWithTimes = calculateEstimatedTimes(
+                routeData.markers,
+                routeData.totalDistance,
                 startTime,
-        	pace
+                pace
             );
-            
-            displayRoute(routeData.points, markersWithTimes);
+
+            const currentDistance = getCurrentPosition(startTime, pace, routeData.totalDistance);
+
+            displayRoute(routeData.points, markersWithTimes, currentDistance);
+            updateTable(routeData.totalDistance, markersWithTimes, currentDistance);
         }
-        
+
+        function updateTable(totalDistance, markers, currentDistance = null) {
+            const infoPanel = document.getElementById('infoPanel');
+            infoPanel.style.display = 'block';
+
+                // Find which mile marker is next (upcoming)
+                let currentMileIndex = -1;
+                if (currentDistance !== null) {
+                    for (let i = 0; i < markers.length; i++) {
+                        if (currentDistance < markers[i].distance) {
+                            currentMileIndex = i;
+                            break;
+                        }
+                    }
+                }
+
+                const rows = markers.map((m, index) => {
+                  const isCurrent = index === currentMileIndex;
+                  const rowClass = isCurrent ? 'current-mile' : '';
+                  const markerClass = isCurrent ? 'current-marker' : '';
+                  const relativeTimeDisplay = m.relativeTime ? ` <span style="color: #888; font-size: 12px;">(${m.relativeTime})</span>` : '';
+                  return `<tr data-index="${index}" class="${rowClass}"><td class="mile-col ${markerClass}">Mile ${m.distance}</td><td class="eta-col">${m.eta}${relativeTimeDisplay}</td></tr>`
+                })
+                const table = `<table class="mile-table">
+                    <thead>
+                        <tr>
+                            <th>Mile Marker</th>
+                            <th>Estimated Time</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        ${rows.join("")}
+                    </tbody>
+                </table>`
+                const contents = `<div class="stat-item">
+                    <div class="stat-label">Total Distance</div>
+                    <div class="stat-value">${totalDistance.toFixed(2)} mi</div>
+                </div>
+                <div>
+                ${table}
+                </div>
+                `
+                document.getElementById("stats").innerHTML = contents;
+
+                // Add click handlers to table rows
+                const tableRows = document.querySelectorAll('.mile-table tbody tr');
+                tableRows.forEach((row, index) => {
+                    row.addEventListener('click', () => {
+                        const marker = markers[index];
+                        if (marker) {
+                            // Scroll to map
+                            document.getElementById('map').scrollIntoView({
+                                behavior: 'smooth',
+                                block: 'center'
+                            });
+
+                            // Zoom level 14 gives roughly 1-2 mile radius view
+                            setTimeout(() => {
+                                map.setView([marker.lat, marker.lon], 14, {
+                                    animate: true,
+                                    duration: 0.5
+                                });
+                            }, 300);
+                        }
+                    });
+                });
+        }
+
+        // Lightweight update for just the runner position (for auto-refresh)
+        function updateRunnerPosition() {
+            if (!routeData || !markersWithTimes) return;
+
+            const startTime = document.getElementById('startTime').value;
+            const paceMin = document.getElementById('paceMin').value;
+            const paceSec = document.getElementById('paceSec').value;
+            const pace = parseInt(paceMin) + parseInt(paceSec) / 60;
+
+            const currentDistance = getCurrentPosition(startTime, pace, routeData.totalDistance);
+
+            // Clear and update runner marker
+            runnerLayer.clearLayers();
+
+            if (currentDistance !== null) {
+                const { points, distances } = routeData;
+
+                // Find exact interpolated position on route based on current distance
+                for (let i = 1; i < distances.length; i++) {
+                    if (distances[i] >= currentDistance) {
+                        // Interpolate between two GPS points
+                        const ratio = (currentDistance - distances[i-1]) / (distances[i] - distances[i-1]);
+                        const lat = points[i-1].lat + ratio * (points[i].lat - points[i-1].lat);
+                        const lon = points[i-1].lon + ratio * (points[i].lon - points[i-1].lon);
+
+                        const currentIcon = L.divIcon({
+                            className: 'custom-marker',
+                            html: '<div style="background: #ffc107; color: white; width: 40px; height: 40px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-weight: bold; font-size: 20px; border: 3px solid white; box-shadow: 0 2px 8px rgba(0,0,0,0.4);">🏃</div>',
+                            iconSize: [40, 40]
+                        });
+
+                        L.marker([lat, lon], { icon: currentIcon })
+                            .bindTooltip(`<div class="marker-popup"><h3>Current Position</h3><p>${currentDistance.toFixed(2)} miles</p></div>`)
+                            .addTo(runnerLayer);
+
+                        break;
+                    }
+                }
+            }
+
+            // Update table highlighting
+            updateTable(routeData.totalDistance, markersWithTimes, currentDistance);
+        }
+
         // Event listeners
         document.getElementById('gpxFile').addEventListener('change', function(e) {
             if (e.target.files.length > 0) {
@@ -478,8 +935,27 @@
         document.getElementById('paceMin').addEventListener('change', updateRoute);
         document.getElementById('paceSec').addEventListener('change', updateRoute);
         
+        // Auto-refresh current position every 30 seconds
+        let autoRefreshInterval = null;
+
+        function startAutoRefresh() {
+            // Clear any existing interval
+            if (autoRefreshInterval) {
+                clearInterval(autoRefreshInterval);
+            }
+
+            // Update every 5 seconds
+            autoRefreshInterval = setInterval(() => {
+                if (routeData) {
+                    updateRunnerPosition();
+                }
+            }, 5000); // 5 seconds
+        }
+
         // Initialize
         initMap();
+        loadRoute(); // Load route after map is ready
+        startAutoRefresh();
     </script>
 </body>
 </html>
