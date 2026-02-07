@@ -4,6 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>RaceTrax</title>
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>🏃‍♀️</text></svg>">
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.css" />
     <style>
         * {
@@ -312,11 +313,22 @@
         .runner-marker {
             z-index: 1000 !important;
         }
+
+        .disclaimer {
+            background: #fff9e6;
+            border-left: 4px solid #ffc107;
+            padding: 12px 16px;
+            margin-bottom: 20px;
+            border-radius: 8px;
+            font-size: 14px;
+            color: #666;
+            line-height: 1.5;
+        }
     </style>
 </head>
 <body>
     <div class="container">
-        <h1>📍 RaceTrax</h1>
+        <h1>RaceTrax</h1>
 
         <div class="controls">
             <div class="control-group">
@@ -350,7 +362,11 @@
             </div>
             <div class="error" id="error"></div>
         </div>
-        
+
+        <div class="disclaimer">
+            Runner's position is estimated. Consult live tracking for your race if it exists for more up-to-date information.
+        </div>
+
         <div id="map"></div>
         
         <div class="info-panel" id="infoPanel" style="display: none;">
