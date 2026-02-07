@@ -39,7 +39,7 @@
 
         .control-group {
             display: grid;
-            grid-template-columns: auto auto auto auto;
+            grid-template-columns: auto auto auto auto auto;
             gap: 20px;
             align-items: end;
         }
@@ -75,6 +75,36 @@
 
         #shareBtn:active {
             transform: translateY(0);
+        }
+
+        .unit-toggle {
+            display: flex;
+            gap: 8px;
+            background: #f5f5f5;
+            padding: 4px;
+            border-radius: 8px;
+        }
+
+        .unit-toggle button {
+            padding: 8px 16px;
+            border: none;
+            border-radius: 6px;
+            background: transparent;
+            color: #666;
+            font-size: 13px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.2s ease;
+        }
+
+        .unit-toggle button.active {
+            background: white;
+            color: #667eea;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }
+
+        .unit-toggle button:hover:not(.active) {
+            color: #333;
         }
 
         @media (max-width: 768px) {
@@ -278,6 +308,10 @@
             font-size: 14px;
             color: #ffc107;
         }
+
+        .runner-marker {
+            z-index: 1000 !important;
+        }
     </style>
 </head>
 <body>
@@ -291,6 +325,13 @@
                     <input type="file" id="gpxFile" accept=".gpx" />
                 </div>
                 <div class="control-item">
+                    <label>Units:</label>
+                    <div class="unit-toggle">
+                        <button id="milesBtn" class="active">Miles</button>
+                        <button id="kmBtn">Kilometers</button>
+                    </div>
+                </div>
+                <div class="control-item">
                     <label for="startTime">Start Time:</label>
                     <input type="time" id="startTime" />
                 </div>
@@ -298,9 +339,9 @@
                     <label for="pace">Pace:</label>
                     <div class="pace-input-group">
                         <input type="number" id="paceMin" min="1" max="60" step="1" value="10" />
-                        <span id="paceUnit">min</span>
+                        <span>min</span>
                         <input type="number" id="paceSec" min="0" max="59" step="1" value="0" />
-                        <span id="paceUnit">sec / mile</span>
+                        <span id="paceUnit">sec / mi</span>
                     </div>
                 </div>
                 <div class="control-item">
@@ -340,6 +381,7 @@
         let runnerLayer;
         let routeData = null;
         let markersWithTimes = null;
+        let useKilometers = false;
 
         // Polyline encoding/decoding functions
         function encodePolyline(points) {
@@ -477,8 +519,8 @@
         }
         
         // Calculate distance between two points (Haversine formula)
-        function calculateDistance(lat1, lon1, lat2, lon2) {
-            const R = 3959; // Earth's radius in miles
+        function calculateDistance(lat1, lon1, lat2, lon2, radius) {
+            const R = radius; // Earth's radius in desired units
             const dLat = (lat2 - lat1) * Math.PI / 180;
             const dLon = (lon2 - lon1) * Math.PI / 180;
             const a = Math.sin(dLat/2) * Math.sin(dLat/2) +
@@ -509,19 +551,20 @@
         }
         
         // Calculate cumulative distances
-        function calculateCumulativeDistances(points) {
+        function calculateCumulativeDistances(points, radius) {
             const distances = [0];
             let totalDistance = 0;
-            
+
             for (let i = 1; i < points.length; i++) {
                 const dist = calculateDistance(
                     points[i-1].lat, points[i-1].lon,
-                    points[i].lat, points[i].lon
+                    points[i].lat, points[i].lon,
+                    radius
                 );
                 totalDistance += dist;
                 distances.push(totalDistance);
             }
-            
+
             return { distances, totalDistance };
         }
         
@@ -661,9 +704,11 @@
                     iconSize: [36, 36]
                 });
                 
+                const unit = useKilometers ? 'km' : 'mi';
+                const unitLabel = useKilometers ? 'Kilometer' : 'Mile';
                 const popupContent = `
                     <div class="marker-popup">
-                        <h3>Mile ${marker.mile}</h3>
+                        <h3>${unitLabel} ${marker.mile}</h3>
                         ${marker.eta ? `<p><strong>ETA:</strong> ${marker.eta}</p>` : ''}
                     </div>
                 `;
@@ -698,13 +743,14 @@
                         const lon = points[i-1].lon + ratio * (points[i].lon - points[i-1].lon);
 
                         const currentIcon = L.divIcon({
-                            className: 'custom-marker',
+                            className: 'custom-marker runner-marker',
                             html: '<div style="background: #ffc107; color: white; width: 40px; height: 40px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-weight: bold; font-size: 20px; border: 3px solid white; box-shadow: 0 2px 8px rgba(0,0,0,0.4);">🏃</div>',
                             iconSize: [40, 40]
                         });
 
+                        const unit = useKilometers ? 'km' : 'mi';
                         L.marker([lat, lon], { icon: currentIcon })
-                            .bindTooltip(`<div class="marker-popup"><h3>Current Position</h3><p>${currentDistance.toFixed(2)} miles</p></div>`)
+                            .bindTooltip(`<div class="marker-popup"><h3>Current Position</h3><p>${currentDistance.toFixed(2)} ${unit}</p></div>`)
                             .addTo(runnerLayer);
 
                         break;
@@ -748,7 +794,8 @@
 
                 try {
                     const points = decodePolyline(routeParam);
-                    const { distances, totalDistance } = calculateCumulativeDistances(points);
+                    const radius = useKilometers ? 6371 : 3959;
+                    const { distances, totalDistance } = calculateCumulativeDistances(points, radius);
                     const markers = findMileMarkers(points, distances, totalDistance);
 
                     routeData = { points, distances, totalDistance, markers };
@@ -789,7 +836,8 @@
             const points = decodePolyline(encoded);
 
             // Now use the decoded points as source of truth
-            const { distances, totalDistance } = calculateCumulativeDistances(points);
+            const radius = useKilometers ? 6371 : 3959;
+            const { distances, totalDistance } = calculateCumulativeDistances(points, radius);
             const markers = findMileMarkers(points, distances, totalDistance);
 
             routeData = { points, distances, totalDistance, markers };
@@ -909,17 +957,18 @@
                     }
                 }
 
+                const unitLabel = useKilometers ? 'Kilometer' : 'Mile';
                 const rows = markers.map((m, index) => {
                   const isCurrent = index === currentMileIndex;
                   const rowClass = isCurrent ? 'current-mile' : '';
                   const markerClass = isCurrent ? 'current-marker' : '';
                   const relativeTimeDisplay = m.relativeTime ? ` <span style="color: #888; font-size: 12px;">(${m.relativeTime})</span>` : '';
-                  return `<tr data-index="${index}" class="${rowClass}"><td class="mile-col ${markerClass}">Mile ${m.distance}</td><td class="eta-col">${m.eta}${relativeTimeDisplay}</td></tr>`
+                  return `<tr data-index="${index}" class="${rowClass}"><td class="mile-col ${markerClass}">${unitLabel} ${m.distance}</td><td class="eta-col">${m.eta}${relativeTimeDisplay}</td></tr>`
                 })
                 const table = `<table class="mile-table">
                     <thead>
                         <tr>
-                            <th>Mile Marker</th>
+                            <th>${useKilometers ? 'Kilometer' : 'Mile'} Marker</th>
                             <th>Estimated Time</th>
                         </tr>
                     </thead>
@@ -927,9 +976,10 @@
                         ${rows.join("")}
                     </tbody>
                 </table>`
+                const unit = useKilometers ? 'km' : 'mi';
                 const contents = `<div class="stat-item">
                     <div class="stat-label">Total Distance</div>
-                    <div class="stat-value">${totalDistance.toFixed(2)} mi</div>
+                    <div class="stat-value">${totalDistance.toFixed(2)} ${unit}</div>
                 </div>
                 <div>
                 ${table}
@@ -987,13 +1037,14 @@
                         const lon = points[i-1].lon + ratio * (points[i].lon - points[i-1].lon);
 
                         const currentIcon = L.divIcon({
-                            className: 'custom-marker',
+                            className: 'custom-marker runner-marker',
                             html: '<div style="background: #ffc107; color: white; width: 40px; height: 40px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-weight: bold; font-size: 20px; border: 3px solid white; box-shadow: 0 2px 8px rgba(0,0,0,0.4);">🏃</div>',
                             iconSize: [40, 40]
                         });
 
+                        const unit = useKilometers ? 'km' : 'mi';
                         L.marker([lat, lon], { icon: currentIcon })
-                            .bindTooltip(`<div class="marker-popup"><h3>Current Position</h3><p>${currentDistance.toFixed(2)} miles</p></div>`)
+                            .bindTooltip(`<div class="marker-popup"><h3>Current Position</h3><p>${currentDistance.toFixed(2)} ${unit}</p></div>`)
                             .addTo(runnerLayer);
 
                         break;
@@ -1016,6 +1067,59 @@
         document.getElementById('paceMin').addEventListener('change', updateRoute);
         document.getElementById('paceSec').addEventListener('change', updateRoute);
         document.getElementById('shareBtn').addEventListener('click', shareRun);
+
+        // Unit toggle - recalculate distances and markers when switching
+        document.getElementById('milesBtn').addEventListener('click', () => {
+            if (useKilometers) {  // Only if actually changing
+                useKilometers = false;
+                document.getElementById('milesBtn').classList.add('active');
+                document.getElementById('kmBtn').classList.remove('active');
+                document.getElementById('paceUnit').textContent = 'sec / mi';
+
+                // Convert pace from km to miles (multiply by 1.60934)
+                const paceMin = parseInt(document.getElementById('paceMin').value);
+                const paceSec = parseInt(document.getElementById('paceSec').value);
+                const totalSeconds = paceMin * 60 + paceSec;
+                const newTotalSeconds = Math.round(totalSeconds * 1.60934);
+                document.getElementById('paceMin').value = Math.floor(newTotalSeconds / 60);
+                document.getElementById('paceSec').value = newTotalSeconds % 60;
+
+                if (routeData) {
+                    // Recalculate everything in miles
+                    const radius = 3959;
+                    const { distances, totalDistance } = calculateCumulativeDistances(routeData.points, radius);
+                    const markers = findMileMarkers(routeData.points, distances, totalDistance);
+                    routeData = { points: routeData.points, distances, totalDistance, markers };
+                    updateRoute();
+                }
+            }
+        });
+
+        document.getElementById('kmBtn').addEventListener('click', () => {
+            if (!useKilometers) {  // Only if actually changing
+                useKilometers = true;
+                document.getElementById('kmBtn').classList.add('active');
+                document.getElementById('milesBtn').classList.remove('active');
+                document.getElementById('paceUnit').textContent = 'sec / km';
+
+                // Convert pace from miles to km (divide by 1.60934)
+                const paceMin = parseInt(document.getElementById('paceMin').value);
+                const paceSec = parseInt(document.getElementById('paceSec').value);
+                const totalSeconds = paceMin * 60 + paceSec;
+                const newTotalSeconds = Math.round(totalSeconds / 1.60934);
+                document.getElementById('paceMin').value = Math.floor(newTotalSeconds / 60);
+                document.getElementById('paceSec').value = newTotalSeconds % 60;
+
+                if (routeData) {
+                    // Recalculate everything in kilometers
+                    const radius = 6371;
+                    const { distances, totalDistance } = calculateCumulativeDistances(routeData.points, radius);
+                    const markers = findMileMarkers(routeData.points, distances, totalDistance);
+                    routeData = { points: routeData.points, distances, totalDistance, markers };
+                    updateRoute();
+                }
+            }
+        });
         
         // Auto-refresh current position every 30 seconds
         let autoRefreshInterval = null;
