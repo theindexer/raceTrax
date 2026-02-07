@@ -361,10 +361,14 @@
 
     <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.js"></script>
     <script>
+        let useKilometers = false;
+
         const params = new URLSearchParams(window.location.search);
         const paceMinParam = params.get("paceMin");
         const paceSecParam = params.get("paceSec");
         const startParam = params.get("startTime");
+        const unitParam = params.get("unit");
+
         if (paceMinParam) {
           document.getElementById('paceMin').value = paceMinParam;
         }
@@ -374,6 +378,12 @@
         if (startParam) {
           document.getElementById("startTime").value = startParam;
         }
+        if (unitParam === 'km') {
+          useKilometers = true;
+          document.getElementById('kmBtn').classList.add('active');
+          document.getElementById('milesBtn').classList.remove('active');
+          document.getElementById('paceUnit').textContent = 'sec / km';
+        }
 
         let map;
         let routeLayer;
@@ -381,7 +391,6 @@
         let runnerLayer;
         let routeData = null;
         let markersWithTimes = null;
-        let useKilometers = false;
 
         // Polyline encoding/decoding functions
         function encodePolyline(points) {
@@ -671,6 +680,34 @@
             return currentDistance;
         }
 
+        // Add runner marker to map
+        function addRunnerMarker(currentDistance, points, distances) {
+            if (currentDistance === null || !routeData) return;
+
+            // Find exact interpolated position on route based on current distance
+            for (let i = 1; i < distances.length; i++) {
+                if (distances[i] >= currentDistance) {
+                    // Interpolate between two GPS points
+                    const ratio = (currentDistance - distances[i-1]) / (distances[i] - distances[i-1]);
+                    const lat = points[i-1].lat + ratio * (points[i].lat - points[i-1].lat);
+                    const lon = points[i-1].lon + ratio * (points[i].lon - points[i-1].lon);
+
+                    const currentIcon = L.divIcon({
+                        className: 'custom-marker runner-marker',
+                        html: '<div style="background: #ffc107; color: white; width: 40px; height: 40px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-weight: bold; font-size: 20px; border: 3px solid white; box-shadow: 0 2px 8px rgba(0,0,0,0.4);">🏃</div>',
+                        iconSize: [40, 40]
+                    });
+
+                    const unit = useKilometers ? 'km' : 'mi';
+                    L.marker([lat, lon], { icon: currentIcon })
+                        .bindTooltip(`<div class="marker-popup"><h3>Current Position</h3><p>${currentDistance.toFixed(2)} ${unit}</p></div>`)
+                        .addTo(runnerLayer);
+
+                    break;
+                }
+            }
+        }
+
         // Display route on map
         function displayRoute(points, markers, currentDistance = null) {
             routeLayer.clearLayers();
@@ -731,35 +768,9 @@
                 .addTo(markersLayer);
 
             // Add current position marker if race is in progress
-            if (currentDistance !== null && routeData) {
-                const { distances } = routeData;
+            addRunnerMarker(currentDistance, points, routeData.distances);
 
-                // Find exact interpolated position on route based on current distance
-                for (let i = 1; i < distances.length; i++) {
-                    if (distances[i] >= currentDistance) {
-                        // Interpolate between two GPS points
-                        const ratio = (currentDistance - distances[i-1]) / (distances[i] - distances[i-1]);
-                        const lat = points[i-1].lat + ratio * (points[i].lat - points[i-1].lat);
-                        const lon = points[i-1].lon + ratio * (points[i].lon - points[i-1].lon);
-
-                        const currentIcon = L.divIcon({
-                            className: 'custom-marker runner-marker',
-                            html: '<div style="background: #ffc107; color: white; width: 40px; height: 40px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-weight: bold; font-size: 20px; border: 3px solid white; box-shadow: 0 2px 8px rgba(0,0,0,0.4);">🏃</div>',
-                            iconSize: [40, 40]
-                        });
-
-                        const unit = useKilometers ? 'km' : 'mi';
-                        L.marker([lat, lon], { icon: currentIcon })
-                            .bindTooltip(`<div class="marker-popup"><h3>Current Position</h3><p>${currentDistance.toFixed(2)} ${unit}</p></div>`)
-                            .addTo(runnerLayer);
-
-                        break;
-                    }
-                }
-            }
-
-            // Fit map to route
-            map.fitBounds(polyline.getBounds(), { padding: [50, 50] });
+            return polyline; // Return polyline so caller can fitBounds if needed
         }
         
         // Display stats
@@ -800,6 +811,10 @@
 
                     routeData = { points, distances, totalDistance, markers };
                     updateRoute();
+
+                    // Fit bounds on initial load
+                    const polyline = L.polyline(points.map(p => [p.lat, p.lon]));
+                    map.fitBounds(polyline.getBounds(), { padding: [50, 50] });
                 } catch (error) {
                     showError('Invalid route parameter');
                 }
@@ -846,6 +861,10 @@
             document.getElementById('shareBtn').style.display = 'block';
 
             updateRoute();
+
+            // Fit bounds on initial load
+            const polyline = L.polyline(points.map(p => [p.lat, p.lon]));
+            map.fitBounds(polyline.getBounds(), { padding: [50, 50] });
         }
 
         // Generate shareable URL
@@ -867,6 +886,7 @@
             if (startTime) params.set("startTime", startTime);
             if (paceMin) params.set("paceMin", paceMin);
             if (paceSec) params.set("paceSec", paceSec);
+            params.set("unit", useKilometers ? 'km' : 'mi');
 
             // Handle both file:// (local) and http(s):// (deployed) URLs
             const baseUrl = window.location.origin && window.location.origin !== 'null'
@@ -916,8 +936,8 @@
         // Update route with current start time
         function updateRoute() {
             if (!routeData) return;
-            
-            
+
+
             const startTime = document.getElementById('startTime').value;
             const paceMin = document.getElementById('paceMin').value;
             const paceSec = document.getElementById('paceSec').value
@@ -927,6 +947,7 @@
             params.set("startTime", startTime);
             params.set("paceMin", paceMin);
             params.set("paceSec", paceSec);
+            params.set("unit", useKilometers ? 'km' : 'mi');
             const newUrl = `${window.location.pathname}?${params.toString()}`;
             window.history.replaceState({}, '', newUrl);
             markersWithTimes = calculateEstimatedTimes(
@@ -1024,33 +1045,7 @@
 
             // Clear and update runner marker
             runnerLayer.clearLayers();
-
-            if (currentDistance !== null) {
-                const { points, distances } = routeData;
-
-                // Find exact interpolated position on route based on current distance
-                for (let i = 1; i < distances.length; i++) {
-                    if (distances[i] >= currentDistance) {
-                        // Interpolate between two GPS points
-                        const ratio = (currentDistance - distances[i-1]) / (distances[i] - distances[i-1]);
-                        const lat = points[i-1].lat + ratio * (points[i].lat - points[i-1].lat);
-                        const lon = points[i-1].lon + ratio * (points[i].lon - points[i-1].lon);
-
-                        const currentIcon = L.divIcon({
-                            className: 'custom-marker runner-marker',
-                            html: '<div style="background: #ffc107; color: white; width: 40px; height: 40px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-weight: bold; font-size: 20px; border: 3px solid white; box-shadow: 0 2px 8px rgba(0,0,0,0.4);">🏃</div>',
-                            iconSize: [40, 40]
-                        });
-
-                        const unit = useKilometers ? 'km' : 'mi';
-                        L.marker([lat, lon], { icon: currentIcon })
-                            .bindTooltip(`<div class="marker-popup"><h3>Current Position</h3><p>${currentDistance.toFixed(2)} ${unit}</p></div>`)
-                            .addTo(runnerLayer);
-
-                        break;
-                    }
-                }
-            }
+            addRunnerMarker(currentDistance, routeData.points, routeData.distances);
 
             // Update table highlighting
             updateTable(routeData.totalDistance, markersWithTimes, currentDistance);
@@ -1068,58 +1063,46 @@
         document.getElementById('paceSec').addEventListener('change', updateRoute);
         document.getElementById('shareBtn').addEventListener('click', shareRun);
 
-        // Unit toggle - recalculate distances and markers when switching
-        document.getElementById('milesBtn').addEventListener('click', () => {
-            if (useKilometers) {  // Only if actually changing
-                useKilometers = false;
-                document.getElementById('milesBtn').classList.add('active');
-                document.getElementById('kmBtn').classList.remove('active');
-                document.getElementById('paceUnit').textContent = 'sec / mi';
+        // Switch between miles and kilometers
+        function switchUnits(toKilometers) {
+            if (useKilometers === toKilometers) return; // Already in desired unit
 
-                // Convert pace from km to miles (multiply by 1.60934)
-                const paceMin = parseInt(document.getElementById('paceMin').value);
-                const paceSec = parseInt(document.getElementById('paceSec').value);
-                const totalSeconds = paceMin * 60 + paceSec;
-                const newTotalSeconds = Math.round(totalSeconds * 1.60934);
-                document.getElementById('paceMin').value = Math.floor(newTotalSeconds / 60);
-                document.getElementById('paceSec').value = newTotalSeconds % 60;
+            useKilometers = toKilometers;
+            const MI_TO_KM = 1.60934;
 
-                if (routeData) {
-                    // Recalculate everything in miles
-                    const radius = 3959;
-                    const { distances, totalDistance } = calculateCumulativeDistances(routeData.points, radius);
-                    const markers = findMileMarkers(routeData.points, distances, totalDistance);
-                    routeData = { points: routeData.points, distances, totalDistance, markers };
-                    updateRoute();
-                }
-            }
-        });
-
-        document.getElementById('kmBtn').addEventListener('click', () => {
-            if (!useKilometers) {  // Only if actually changing
-                useKilometers = true;
+            // Update UI
+            if (toKilometers) {
                 document.getElementById('kmBtn').classList.add('active');
                 document.getElementById('milesBtn').classList.remove('active');
                 document.getElementById('paceUnit').textContent = 'sec / km';
-
-                // Convert pace from miles to km (divide by 1.60934)
-                const paceMin = parseInt(document.getElementById('paceMin').value);
-                const paceSec = parseInt(document.getElementById('paceSec').value);
-                const totalSeconds = paceMin * 60 + paceSec;
-                const newTotalSeconds = Math.round(totalSeconds / 1.60934);
-                document.getElementById('paceMin').value = Math.floor(newTotalSeconds / 60);
-                document.getElementById('paceSec').value = newTotalSeconds % 60;
-
-                if (routeData) {
-                    // Recalculate everything in kilometers
-                    const radius = 6371;
-                    const { distances, totalDistance } = calculateCumulativeDistances(routeData.points, radius);
-                    const markers = findMileMarkers(routeData.points, distances, totalDistance);
-                    routeData = { points: routeData.points, distances, totalDistance, markers };
-                    updateRoute();
-                }
+            } else {
+                document.getElementById('milesBtn').classList.add('active');
+                document.getElementById('kmBtn').classList.remove('active');
+                document.getElementById('paceUnit').textContent = 'sec / mi';
             }
-        });
+
+            // Convert pace
+            const paceMin = parseInt(document.getElementById('paceMin').value);
+            const paceSec = parseInt(document.getElementById('paceSec').value);
+            const totalSeconds = paceMin * 60 + paceSec;
+            const conversionFactor = toKilometers ? (1 / MI_TO_KM) : MI_TO_KM;
+            const newTotalSeconds = Math.round(totalSeconds * conversionFactor);
+            document.getElementById('paceMin').value = Math.floor(newTotalSeconds / 60);
+            document.getElementById('paceSec').value = newTotalSeconds % 60;
+
+            // Recalculate route with appropriate radius
+            if (routeData) {
+                const radius = toKilometers ? 6371 : 3959;
+                const { distances, totalDistance } = calculateCumulativeDistances(routeData.points, radius);
+                const markers = findMileMarkers(routeData.points, distances, totalDistance);
+                routeData = { points: routeData.points, distances, totalDistance, markers };
+                updateRoute();
+            }
+        }
+
+        // Unit toggle event listeners
+        document.getElementById('milesBtn').addEventListener('click', () => switchUnits(false));
+        document.getElementById('kmBtn').addEventListener('click', () => switchUnits(true));
         
         // Auto-refresh current position every 30 seconds
         let autoRefreshInterval = null;
