@@ -253,6 +253,9 @@
                         <span id="paceUnit">sec / mile</span>
                     </div>
                 </div>
+                <div class="control-item">
+                    <button id="shareBtn" style="display: none; padding: 10px 20px; background: #667eea; color: white; border: none; border-radius: 6px; font-size: 14px; font-weight: 600; cursor: pointer;">📋 Share Run</button>
+                </div>
             </div>
             <div class="error" id="error"></div>
         </div>
@@ -694,35 +697,15 @@
                 document.getElementById('gpxUploadControl').style.display = 'none';
 
                 try {
-                    console.log('Route param:', routeParam);
-                    console.log('Route param length:', routeParam.length);
                     const points = decodePolyline(routeParam);
-                    console.log('Decoded points:', points.length);
                     const { distances, totalDistance } = calculateCumulativeDistances(points);
                     const markers = findMileMarkers(points, distances, totalDistance);
 
                     routeData = { points, distances, totalDistance, markers };
                     updateRoute();
                 } catch (error) {
-                    console.error('Error decoding route:', error);
-                    console.error('Error details:', error.message, error.stack);
-                    showError('Invalid route parameter: ' + error.message);
+                    showError('Invalid route parameter');
                 }
-            } else {
-                // Fallback to loading blue.gpx
-                fetch('./routes/blue.gpx')
-                 .then(response => {
-                   if (!response.ok) {
-                     throw new Error(`HTTP error! status: ${response.status}`);
-                   }
-                   return response.text();
-                 })
-                 .then(data => {
-                   handleGpx(data);
-                 })
-                 .catch(error => {
-                   console.error('Error fetching file:', error);
-                 });
             }
         }
 
@@ -748,16 +731,12 @@
         function handleGpx(gpx) {
             const originalPoints = parseGPX(gpx);
 
-            // Simplify and encode
-            const simplified = simplifyRoute(originalPoints, 0.0001);
-            console.log('Original points:', originalPoints.length, 'Simplified:', simplified.length);
+            // Simplify and encode (lower tolerance = more points = smoother route)
+            const simplified = simplifyRoute(originalPoints, 0.00005);
             const encoded = encodePolyline(simplified);
-            console.log('Encoded polyline length:', encoded.length);
-            console.log('Encoded polyline:', encoded.substring(0, 100) + '...');
 
             // Decode back to ensure we use exactly what recipients will see
             const points = decodePolyline(encoded);
-            console.log('Decoded back to points:', points.length);
 
             // Now use the decoded points as source of truth
             const { distances, totalDistance } = calculateCumulativeDistances(points);
@@ -765,22 +744,75 @@
 
             routeData = { points, distances, totalDistance, markers };
 
-            // Update URL with encoded route
-            const params = new URLSearchParams(window.location.search);
+            // Show share button
+            document.getElementById('shareBtn').style.display = 'block';
+
+            updateRoute();
+        }
+
+        // Generate shareable URL
+        function generateShareableURL() {
+            if (!routeData) return null;
+
+            // Simplify and encode current route
+            const simplified = simplifyRoute(routeData.points, 0.00005);
+            const encoded = encodePolyline(simplified);
+
+            // Build URL with all parameters
+            const params = new URLSearchParams();
             params.set("route", encoded);
 
-            // Preserve other params
             const startTime = document.getElementById('startTime').value;
             const paceMin = document.getElementById('paceMin').value;
             const paceSec = document.getElementById('paceSec').value;
+
             if (startTime) params.set("startTime", startTime);
             if (paceMin) params.set("paceMin", paceMin);
             if (paceSec) params.set("paceSec", paceSec);
 
-            const newUrl = `${window.location.pathname}?${params.toString()}`;
-            window.history.replaceState({}, '', newUrl);
+            // Handle both file:// (local) and http(s):// (deployed) URLs
+            const baseUrl = window.location.origin && window.location.origin !== 'null'
+                ? `${window.location.origin}${window.location.pathname}`
+                : window.location.href.split('?')[0];
 
-            updateRoute();
+            return `${baseUrl}?${params.toString()}`;
+        }
+
+        // Copy shareable URL to clipboard
+        function shareRun() {
+            const startTime = document.getElementById('startTime').value;
+            const paceMin = document.getElementById('paceMin').value;
+            const paceSec = document.getElementById('paceSec').value;
+
+            // Validate required fields
+            if (!startTime) {
+                showError('Please set a start time before sharing');
+                return;
+            }
+
+            if (!paceMin || paceMin === '0') {
+                showError('Please set a pace before sharing');
+                return;
+            }
+
+            const url = generateShareableURL();
+            if (!url) {
+                showError('No route loaded to share');
+                return;
+            }
+
+            navigator.clipboard.writeText(url).then(() => {
+                const btn = document.getElementById('shareBtn');
+                const originalText = btn.textContent;
+                btn.textContent = '✓ Copied!';
+                btn.style.background = '#4CAF50';
+                setTimeout(() => {
+                    btn.textContent = originalText;
+                    btn.style.background = '#667eea';
+                }, 2000);
+            }).catch(err => {
+                showError('Failed to copy to clipboard');
+            });
         }
         
         // Update route with current start time
@@ -792,7 +824,6 @@
             const paceMin = document.getElementById('paceMin').value;
             const paceSec = document.getElementById('paceSec').value
             const pace = parseInt(paceMin) + parseInt(paceSec) / 60;
-            console.log(pace)
 
             const params = new URLSearchParams(window.location.search);
             params.set("startTime", startTime);
@@ -934,6 +965,7 @@
         document.getElementById('startTime').addEventListener('change', updateRoute);
         document.getElementById('paceMin').addEventListener('change', updateRoute);
         document.getElementById('paceSec').addEventListener('change', updateRoute);
+        document.getElementById('shareBtn').addEventListener('click', shareRun);
         
         // Auto-refresh current position every 30 seconds
         let autoRefreshInterval = null;
